@@ -1,33 +1,29 @@
 package main
 
+import (
+	"fmt"
+	"os"
+)
+
 func main() {
-	// initialize db
-	dal, _ := newDal("db.db")
+	options := &Options{
+		pageSize:       os.Getpagesize(),
+		MinFillPercent: 0.0125,
+		MaxFillPercent: 0.025,
+	}
+	dal, _ := newDal("mainTest4", options)
 
-	// create a new page
-	p := dal.allocateEmptyPage()
-	p.num = dal.getNextPage()
-	copy(p.data[:], "data")
+	c := newCollection([]byte("collection1"), dal.root)
+	c.dal = dal
 
-	// commit it
-	_ = dal.writePage(p)
-	_, _ = dal.writeFreelist()
+	_ = c.Put([]byte("Key1"), []byte("Value1"))
+	_ = c.Put([]byte("Key2"), []byte("Value2"))
+	_ = c.Put([]byte("Key3"), []byte("Value3"))
+	_ = c.Put([]byte("Key4"), []byte("Value4"))
+	_ = c.Put([]byte("Key5"), []byte("Value5"))
+	_ = c.Put([]byte("Key6"), []byte("Value6"))
+	item, _ := c.Find([]byte("Key1"))
 
-	// Close the db
+	fmt.Printf("key is: %s, value is: %s\n", item.key, item.value)
 	_ = dal.close()
-
-	// We expect the freelist state was saved, so we write to
-	// page number 3 and not overwrite the one at number 2
-	dal, _ = newDal("db.db")
-	p = dal.allocateEmptyPage()
-	p.num = dal.getNextPage()
-	copy(p.data[:], "data2")
-	_ = dal.writePage(p)
-
-	// Create a page and free it so the released pages will be updated
-	pageNum := dal.getNextPage()
-	dal.releasePage(pageNum)
-
-	// commit it
-	_, _ = dal.writeFreelist()
 }

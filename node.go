@@ -135,11 +135,8 @@ func (n *Node) deserialize(buf []byte) {
 }
 
 func (n *Node) writeNode(node *Node) *Node {
-	writtenNode, err := n.dal.writeNode(node)
-	if err != nil {
-		return nil
-	}
-	return writtenNode
+	node, _ = n.dal.writeNode(node)
+	return node
 }
 
 func (n *Node) writeNodes(nodes ...*Node) {
@@ -172,30 +169,105 @@ func (n *Node) findKeyInNode(key []byte) (bool, int) {
 	return false, len(n.items)
 }
 
-func (n *Node) findKey(key []byte) (int, *Node, error) {
-	index, node, err := findKeyHelper(n, key)
+func (n *Node) findKey(key []byte, exact bool) (int, *Node, []int, error) {
+	ancestorsIndexes := []int{0} // index of root
+	index, node, err := findKeyHelper(n, key, exact, &ancestorsIndexes)
 	if err != nil {
-		return -1, nil, err
+		return -1, nil, nil, err
 	}
-	return index, node, nil
+	return index, node, ancestorsIndexes, nil
 }
 
-func findKeyHelper(node *Node, key []byte) (int, *Node, error) {
-	// Search for the key inside the node
+func findKeyHelper(node *Node, key []byte, exact bool, ancestorsIndexes *[]int) (int, *Node, error) {
 	wasFound, index := node.findKeyInNode(key)
 	if wasFound {
 		return index, node, nil
 	}
 
-	// If we reached a leaf node and the key wasn't found, it means it doesn't exist.
 	if node.isLeaf() {
-		return -1, nil, nil
+		if exact {
+			return -1, nil, nil
+		}
+		return index, node, nil
 	}
 
-	// Else keep searching the tree
+	*ancestorsIndexes = append(*ancestorsIndexes, index)
 	nextChild, err := node.getNode(node.childNodes[index])
 	if err != nil {
 		return -1, nil, err
 	}
-	return findKeyHelper(nextChild, key)
+	return findKeyHelper(nextChild, key, exact, ancestorsIndexes)
+}
+
+func (n *Node) nodeSize() int {
+	size := 0
+	size += nodeHeaderSize
+	for i := range n.items {
+		size += n.elementSize(i)
+	}
+	//add last page
+	size += pageNumSize
+	return size
+}
+
+// elementSize returns the size of a key-value-childNode triplet at a given index.
+// If the node is a leaf, then the size of a key-value pair is returned.
+// It's assumed i <= len(n.items)
+func (n *Node) elementSize(i int) int {
+	size := 0
+	size += len(n.items[i].key)
+	size += len(n.items[i].value)
+	size += pageNumSize
+	return size
+}
+
+func (n *Node) addItem(item *Item, insertionIndex int) int {
+	if len(n.items) == insertionIndex { // nil or empty slice or after last element
+		n.items = append(n.items, item)
+		return insertionIndex
+	}
+	n.items = append(n.items[:insertionIndex+1], n.items[insertionIndex:]...)
+	n.items[insertionIndex] = item
+	return insertionIndex
+}
+
+// isOverPopulated checks if the node size is bigger than the size of a page.
+func (n *Node) isOverPopulated() bool {
+	return n.dal.isOverPopulated(n)
+}
+
+// isUnderPopulated checks if the node size is smaller than the size of a page.
+func (n *Node) isUnderPopulated() bool {
+	return n.dal.isUnderPopulated(n)
+}
+
+func (n *Node) split(nodeToSplit *Node, nodeToSplitIndex int) {
+	// The first index where min amount of bytes to populate a page is achieved. Then add 1 so it will be split one
+	// index after.
+	splitIndex := nodeToSplit.dal.getSplitIndex(nodeToSplit)
+
+	middleItem := nodeToSplit.items[splitIndex]
+	var newNode *Node
+
+	if nodeToSplit.isLeaf() {
+		newNode = n.writeNode(n.dal.newNode(nodeToSplit.items[splitIndex+1:], []pgnum{}))
+		nodeToSplit.items = nodeToSplit.items[:splitIndex]
+	} else {
+		newNode = n.writeNode(n.dal.newNode(nodeToSplit.items[splitIndex+1:], nodeToSplit.childNodes[splitIndex+1:]))
+		nodeToSplit.items = nodeToSplit.items[:splitIndex]
+		nodeToSplit.childNodes = nodeToSplit.childNodes[:splitIndex+1]
+	}
+	n.addItem(middleItem, nodeToSplitIndex)
+	if len(n.childNodes) == nodeToSplitIndex+1 { // If middle of list, then move items forward
+		n.childNodes = append(n.childNodes, newNode.pageNum)
+	} else {
+		n.childNodes = append(n.childNodes[:nodeToSplitIndex+1], n.childNodes[nodeToSplitIndex:]...)
+		n.childNodes[nodeToSplitIndex+1] = newNode.pageNum
+	}
+
+	n.writeNodes(n, nodeToSplit)
+}
+
+func NewEmptyNode() *Node {
+	return &Node{}
 }
