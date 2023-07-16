@@ -1,6 +1,9 @@
 package main
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
 type Item struct {
 	key   []byte
@@ -147,4 +150,52 @@ func (n *Node) writeNodes(nodes ...*Node) {
 
 func (n *Node) getNode(pageNum pgnum) (*Node, error) {
 	return n.dal.getNode(pageNum)
+}
+
+// findKeyInNode iterates all the items and finds the key. If the key is found, then the item is returned. If the key
+// isn't found then return the index where it should have been (the first index that key is greater than it's previous)
+
+func (n *Node) findKeyInNode(key []byte) (bool, int) {
+	for i, exisistingItem := range n.items {
+		res := bytes.Compare(exisistingItem.key, key)
+
+		if res == 0 {
+			//key matches
+			return true, i
+		}
+
+		if res == 1 {
+			//key is bigger than last key
+			return false, i
+		}
+	}
+	return false, len(n.items)
+}
+
+func (n *Node) findKey(key []byte) (int, *Node, error) {
+	index, node, err := findKeyHelper(n, key)
+	if err != nil {
+		return -1, nil, err
+	}
+	return index, node, nil
+}
+
+func findKeyHelper(node *Node, key []byte) (int, *Node, error) {
+	// Search for the key inside the node
+	wasFound, index := node.findKeyInNode(key)
+	if wasFound {
+		return index, node, nil
+	}
+
+	// If we reached a leaf node and the key wasn't found, it means it doesn't exist.
+	if node.isLeaf() {
+		return -1, nil, nil
+	}
+
+	// Else keep searching the tree
+	nextChild, err := node.getNode(node.childNodes[index])
+	if err != nil {
+		return -1, nil, err
+	}
+	return findKeyHelper(nextChild, key)
 }
