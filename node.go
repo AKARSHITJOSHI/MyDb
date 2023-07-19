@@ -227,7 +227,7 @@ func (n *Node) nodeSize() int {
 // If the key isn't found, we have 2 options. If exact is true, it means we expect findKey
 // to find the key, so a falsey answer. If exact is false, then findKey is used to locate where a new key should be
 // inserted so the position is returned.
-func (n *Node) findKey(key []byte, exact bool) (int, *Node, []int ,error) {
+func (n *Node) findKey(key []byte, exact bool) (int, *Node, []int, error) {
 	ancestorsIndexes := []int{0} // index of root
 	index, node, err := findKeyHelper(n, key, exact, &ancestorsIndexes)
 	if err != nil {
@@ -236,7 +236,7 @@ func (n *Node) findKey(key []byte, exact bool) (int, *Node, []int ,error) {
 	return index, node, ancestorsIndexes, nil
 }
 
-func findKeyHelper(node *Node, key []byte, exact bool, ancestorsIndexes *[]int) (int, *Node ,error) {
+func findKeyHelper(node *Node, key []byte, exact bool, ancestorsIndexes *[]int) (int, *Node, error) {
 	wasFound, index := node.findKeyInNode(key)
 	if wasFound {
 		return index, node, nil
@@ -322,4 +322,177 @@ func (n *Node) split(nodeToSplit *Node, nodeToSplitIndex int) {
 	}
 
 	n.writeNodes(n, nodeToSplit)
+}
+
+// removeItemFromLeaf removes an item from a leaf node. It means there is no handling of child nodes.
+func (n *Node) removeItemFromLeaf(index int) {
+	n.items = append(n.items[:index], n.items[index+1:]...)
+	n.writeNode(n)
+}
+
+func (n *Node) removeItemFromInternal(index int) ([]int, error) {
+	// Take element before inorder (The biggest element from the left branch), put it in the removed index and remove
+	// it from the original node. Track in affectedNodes any nodes in the path leading to that node. It will be used
+	// in case the tree needs to be rebalanced.
+	//          p
+	//       /
+	//     ..
+	//  /     \
+	// ..      a
+
+	affectedNodes := make([]int, 0)
+	affectedNodes = append(affectedNodes, index)
+
+	// Starting from its left child, descend to the rightmost descendant.
+	aNode, err := n.getNode(n.childNodes[index])
+	if err != nil {
+		return nil, err
+	}
+
+	for !aNode.isLeaf() {
+		traversingIndex := len(n.childNodes) - 1
+		aNode, err = aNode.getNode(aNode.childNodes[traversingIndex])
+		if err != nil {
+			return nil, err
+		}
+		affectedNodes = append(affectedNodes, traversingIndex)
+	}
+
+	// Replace the item that should be removed with the item before inorder which we just found.
+	n.items[index] = aNode.items[len(aNode.items)-1]
+	aNode.items = aNode.items[:len(aNode.items)-1]
+	n.writeNodes(n, aNode)
+
+	return affectedNodes, nil
+}
+
+func rotateRight(aNode, pNode, bNode *Node, bNodeIndex int) {
+	// 	           p                                    p
+	//                 4                                    3
+	//	      /        \           ------>         /          \
+	//	   a           b (unbalanced)            a        b (unbalanced)
+	//      1,2,3             5                     1,2            4,5
+
+	// Get last item and remove it
+	aNodeItem := aNode.items[len(aNode.items)-1]
+	aNode.items = aNode.items[:len(aNode.items)-1]
+
+	// Get item from parent node and assign the aNodeItem item instead
+	pNodeItemIndex := bNodeIndex - 1
+	if isFirst(bNodeIndex) {
+		pNodeItemIndex = 0
+	}
+	pNodeItem := pNode.items[pNodeItemIndex]
+	pNode.items[pNodeItemIndex] = aNodeItem
+
+	// Assign parent item to b and make it first
+	bNode.items = append([]*Item{pNodeItem}, bNode.items...)
+
+	// If it's an inner leaf then move children as well.
+	if !aNode.isLeaf() {
+		childNodeToShift := aNode.childNodes[len(aNode.childNodes)-1]
+		aNode.childNodes = aNode.childNodes[:len(aNode.childNodes)-1]
+		bNode.childNodes = append([]pgnum{childNodeToShift}, bNode.childNodes...)
+	}
+}
+
+func rotateLeft(aNode, pNode, bNode *Node, bNodeIndex int) {
+	// 	           p                                     p
+	//                 2                                     3
+	//	      /        \           ------>         /          \
+	//  a(unbalanced)       b                 a(unbalanced)        b
+	//   1                3,4,5                   1,2             4,5
+
+	// Get first item and remove it
+	bNodeItem := bNode.items[0]
+	bNode.items = bNode.items[1:]
+
+	// Get item from parent node and assign the bNodeItem item instead
+	pNodeItemIndex := bNodeIndex
+	if isLast(bNodeIndex, pNode) {
+		pNodeItemIndex = len(pNode.items) - 1
+	}
+	pNodeItem := pNode.items[pNodeItemIndex]
+	pNode.items[pNodeItemIndex] = bNodeItem
+
+	// Assign parent item to a and make it last
+	aNode.items = append(aNode.items, pNodeItem)
+
+	// If it's an inner leaf then move children as well.
+	if !bNode.isLeaf() {
+		childNodeToShift := bNode.childNodes[0]
+		bNode.childNodes = bNode.childNodes[1:]
+		aNode.childNodes = append(aNode.childNodes, childNodeToShift)
+	}
+}
+
+func (n *Node) merge(bNode *Node, bNodeIndex int) error {
+	// 	               p                                     p
+	//                    3,5                                    5
+	//	      /        |       \       ------>         /          \
+	//          a          b        c                     a            c
+	//         1,2         4        6,7                 1,2,3,4         6,7
+	aNode, _ := n.getNode(n.childNodes[bNodeIndex-1])
+
+	// Take the item from the parent, remove it and add it to the unbalanced node
+	pNodeItem := n.items[bNodeIndex-1]
+	n.items = append(n.items[:bNodeIndex-1], n.items[bNodeIndex:]...)
+	aNode.items = append(aNode.items, pNodeItem)
+
+	aNode.items = append(aNode.items, bNode.items...)
+	n.childNodes = append(n.childNodes[:bNodeIndex], n.childNodes[bNodeIndex+1:]...)
+	if !aNode.isLeaf() {
+		aNode.childNodes = append(aNode.childNodes, bNode.childNodes...)
+	}
+
+	n.writeNodes(aNode, n)
+	n.dal.deleteNode(bNode.pageNum)
+	return nil
+}
+
+// rebalanceRemove rebalances the tree after a remove operation. This can be either by rotating to the right, to the
+// left or by merging. First, the sibling nodes are checked to see if they have enough items for rebalancing
+// (>= minItems+1). If they don't have enough items, then merging with one of the sibling nodes occurs. This may leave
+// the parent unbalanced by having too little items so rebalancing has to be checked for all the ancestors.
+func (n *Node) rebalanceRemove(unbalancedNode *Node, unbalancedNodeIndex int) error {
+	pNode := n
+
+	// Right rotate
+	if unbalancedNodeIndex != 0 {
+		leftNode, err := n.getNode(pNode.childNodes[unbalancedNodeIndex-1])
+		if err != nil {
+			return err
+		}
+		if leftNode.canSpareAnElement() {
+			rotateRight(leftNode, pNode, unbalancedNode, unbalancedNodeIndex)
+			n.writeNodes(leftNode, pNode, unbalancedNode)
+			return nil
+		}
+	}
+
+	// Left Balance
+	if unbalancedNodeIndex != len(pNode.childNodes)-1 {
+		rightNode, err := n.getNode(pNode.childNodes[unbalancedNodeIndex+1])
+		if err != nil {
+			return err
+		}
+		if rightNode.canSpareAnElement() {
+			rotateLeft(unbalancedNode, pNode, rightNode, unbalancedNodeIndex)
+			n.writeNodes(unbalancedNode, pNode, rightNode)
+			return nil
+		}
+	}
+	// The merge function merges a given node with its node to the right. So by default, we merge an unbalanced node
+	// with its right sibling. In the case where the unbalanced node is the leftmost, we have to replace the merge
+	// parameters, so the unbalanced node right sibling, will be merged into the unbalanced node.
+	if unbalancedNodeIndex == 0 {
+		rightNode, err := n.getNode(n.childNodes[unbalancedNodeIndex+1])
+		if err != nil {
+			return err
+		}
+
+		return pNode.merge(rightNode, unbalancedNodeIndex+1)
+	}
+
+	return pNode.merge(unbalancedNode, unbalancedNodeIndex)
 }
