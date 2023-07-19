@@ -5,8 +5,7 @@ import "bytes"
 type Collection struct {
 	name []byte
 	root pgnum
-
-	dal *dal
+	dal  *dal
 }
 
 func newCollection(name []byte, root pgnum) *Collection {
@@ -16,20 +15,34 @@ func newCollection(name []byte, root pgnum) *Collection {
 	}
 }
 
-// Put adds a key to the tree. It finds the correct node and the insertion index and adds the item. When performing the
-// search, the ancestors are returned as well. This way we can iterate over them to check which nodes were modified and
-// rebalance by splitting them accordingly. If the root has too many items, then a new root of a new layer is
-// created and the created nodes from the split are added as children.
+// Find Returns an item according based on the given key by performing a binary search.
+func (c *Collection) Find(key []byte) (*Item, error) {
+	n, err := c.dal.getNode(c.root)
+	if err != nil {
+		return nil, err
+	}
+	index, containingNode, _, err := n.findKey(key, true)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if index == -1 {
+		return nil, nil
+	}
+
+	return containingNode.items[index], nil
+}
+
 func (c *Collection) Put(key []byte, value []byte) error {
 	i := newItem(key, value)
-
-	// On first insertion the root node does not exist, so it should be created
 	var root *Node
 	var err error
+	//if there no root assigned to the collection
 	if c.root == 0 {
 		root, err = c.dal.writeNode(c.dal.newNode([]*Item{i}, []pgnum{}))
 		if err != nil {
-			return nil
+			return err
 		}
 		c.root = root.pageNum
 		return nil
@@ -39,21 +52,23 @@ func (c *Collection) Put(key []byte, value []byte) error {
 			return err
 		}
 	}
+	//Find the node where insertion should happen
+	insertionIndex, nodeToInsertIn, ancestorsIndexes, err := root.findKey(key, true)
 
-	// Find the path to the node where the insertion should happen
-	insertionIndex, nodeToInsertIn, ancestorsIndexes, err := root.findKey(i.key, false)
 	if err != nil {
 		return err
 	}
 
-	// If key already exists
-	if nodeToInsertIn.items != nil && insertionIndex < len(nodeToInsertIn.items) && bytes.Compare(nodeToInsertIn.items[insertionIndex].key, key) == 0 {
+	if nodeToInsertIn.items != nil && bytes.Compare(nodeToInsertIn.items[insertionIndex].key, key) == 0 {
 		nodeToInsertIn.items[insertionIndex] = i
 	} else {
 		// Add item to the leaf node
 		nodeToInsertIn.addItem(i, insertionIndex)
 	}
-	nodeToInsertIn.writeNode(nodeToInsertIn)
+	_, err = c.dal.writeNode(nodeToInsertIn)
+	if err != nil {
+		return err
+	}
 
 	ancestors, err := c.getNodes(ancestorsIndexes)
 	if err != nil {
@@ -86,32 +101,9 @@ func (c *Collection) Put(key []byte, value []byte) error {
 	}
 
 	return nil
+
 }
 
-// Find Returns an item according based on the given key by performing a binary search.
-func (c *Collection) Find(key []byte) (*Item, error) {
-	n, err := c.dal.getNode(c.root)
-	if err != nil {
-		return nil, err
-	}
-
-	index, containingNode, _, err := n.findKey(key, true)
-	if err != nil {
-		return nil, err
-	}
-	if index == -1 {
-		return nil, nil
-	}
-	return containingNode.items[index], nil
-}
-
-// getNodes returns a list of nodes based on their indexes (the breadcrumbs) from the root
-//           p
-//       /       \
-//     a          b
-//  /     \     /   \
-// c       d   e     f
-// For [0,1,0] -> p,b,e
 func (c *Collection) getNodes(indexes []int) ([]*Node, error) {
 	root, err := c.dal.getNode(c.root)
 	if err != nil {
