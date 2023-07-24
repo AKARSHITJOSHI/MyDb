@@ -29,7 +29,7 @@ type dal struct {
 	pageSize       int
 	minFillPercent float32
 	maxFillPercent float32
-	file *os.File
+	file           *os.File
 
 	*meta
 	*freelist
@@ -104,14 +104,13 @@ func (d *dal) getSplitIndex(node *Node) int {
 
 		// if we have a big enough page size (more than minimum), and didn't reach the last node, which means we can
 		// spare an element
-		if float32(size) > d.minThreshold() && i < len(node.items) - 1 {
+		if float32(size) > d.minThreshold() && i < len(node.items)-1 {
 			return i + 1
 		}
 	}
 
 	return -1
 }
-
 
 func (d *dal) maxThreshold() float32 {
 	return d.maxFillPercent * float32(d.pageSize)
@@ -169,7 +168,7 @@ func (d *dal) newNode(items []*Item, childNodes []pgnum) *Node {
 	node.items = items
 	node.childNodes = childNodes
 	node.pageNum = d.getNextPage()
-	node.dal = d
+	// node.tx.dal = d
 	return node
 }
 
@@ -181,7 +180,7 @@ func (d *dal) getNode(pageNum pgnum) (*Node, error) {
 	node := NewEmptyNode()
 	node.deserialize(p.data)
 	node.pageNum = pageNum
-	node.dal=d
+	// node.dal = d
 	return node, nil
 }
 

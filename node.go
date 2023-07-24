@@ -11,7 +11,8 @@ type Item struct {
 }
 
 type Node struct {
-	*dal
+	// associated transaction
+	tx *tx
 
 	pageNum    pgnum
 	items      []*Item
@@ -50,7 +51,7 @@ func (n *Node) isLeaf() bool {
 }
 
 func (n *Node) writeNode(node *Node) *Node {
-	node, _ = n.dal.writeNode(node)
+	node, _ = n.tx.db.writeNode(node)
 	return node
 }
 
@@ -61,17 +62,17 @@ func (n *Node) writeNodes(nodes ...*Node) {
 }
 
 func (n *Node) getNode(pageNum pgnum) (*Node, error) {
-	return n.dal.getNode(pageNum)
+	return n.tx.getNode(pageNum)
 }
 
 // isOverPopulated checks if the node size is bigger than the size of a page.
 func (n *Node) isOverPopulated() bool {
-	return n.dal.isOverPopulated(n)
+	return n.tx.db.isOverPopulated(n)
 }
 
 // canSpareAnElement checks if the node size is big enough to populate a page after giving away one item.
 func (n *Node) canSpareAnElement() bool {
-	splitIndex := n.dal.getSplitIndex(n)
+	splitIndex := n.tx.db.getSplitIndex(n)
 	if splitIndex == -1 {
 		return false
 	}
@@ -80,7 +81,7 @@ func (n *Node) canSpareAnElement() bool {
 
 // isUnderPopulated checks if the node size is smaller than the size of a page.
 func (n *Node) isUnderPopulated() bool {
-	return n.dal.isUnderPopulated(n)
+	return n.tx.db.isUnderPopulated(n)
 }
 
 func (n *Node) serialize(buf []byte) []byte {
@@ -300,16 +301,16 @@ func (n *Node) addItem(item *Item, insertionIndex int) int {
 func (n *Node) split(nodeToSplit *Node, nodeToSplitIndex int) {
 	// The first index where min amount of bytes to populate a page is achieved. Then add 1 so it will be split one
 	// index after.
-	splitIndex := nodeToSplit.dal.getSplitIndex(nodeToSplit)
+	splitIndex := nodeToSplit.tx.db.getSplitIndex(nodeToSplit)
 
 	middleItem := nodeToSplit.items[splitIndex]
 	var newNode *Node
 
 	if nodeToSplit.isLeaf() {
-		newNode = n.writeNode(n.dal.newNode(nodeToSplit.items[splitIndex+1:], []pgnum{}))
+		newNode = n.writeNode(n.tx.newNode(nodeToSplit.items[splitIndex+1:], []pgnum{}))
 		nodeToSplit.items = nodeToSplit.items[:splitIndex]
 	} else {
-		newNode = n.writeNode(n.dal.newNode(nodeToSplit.items[splitIndex+1:], nodeToSplit.childNodes[splitIndex+1:]))
+		newNode = n.writeNode(n.tx.newNode(nodeToSplit.items[splitIndex+1:], nodeToSplit.childNodes[splitIndex+1:]))
 		nodeToSplit.items = nodeToSplit.items[:splitIndex]
 		nodeToSplit.childNodes = nodeToSplit.childNodes[:splitIndex+1]
 	}
@@ -324,22 +325,17 @@ func (n *Node) split(nodeToSplit *Node, nodeToSplitIndex int) {
 	n.writeNodes(n, nodeToSplit)
 }
 
-// removeItemFromLeaf removes an item from a leaf node. It means there is no handling of child nodes.
+//using append method we are only removing the specified element from items array.
 func (n *Node) removeItemFromLeaf(index int) {
 	n.items = append(n.items[:index], n.items[index+1:]...)
 	n.writeNode(n)
 }
 
 func (n *Node) removeItemFromInternal(index int) ([]int, error) {
-	// Take element before inorder (The biggest element from the left branch), put it in the removed index and remove
-	// it from the original node. Track in affectedNodes any nodes in the path leading to that node. It will be used
-	// in case the tree needs to be rebalanced.
-	//          p
-	//       /
-	//     ..
-	//  /     \
-	// ..      a
-
+	/*
+		(the value is in an internal node), choose a new separator — the largest element in the left subtree,
+		remove it from the leaf node it is in, and replace the element to be deleted with the new separator
+	*/
 	affectedNodes := make([]int, 0)
 	affectedNodes = append(affectedNodes, index)
 
@@ -348,8 +344,9 @@ func (n *Node) removeItemFromInternal(index int) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	//this loop returns the biggest child in left
 	for !aNode.isLeaf() {
+		//get rightmost of child nodes (predecessor)
 		traversingIndex := len(n.childNodes) - 1
 		aNode, err = aNode.getNode(aNode.childNodes[traversingIndex])
 		if err != nil {
@@ -358,7 +355,7 @@ func (n *Node) removeItemFromInternal(index int) ([]int, error) {
 		affectedNodes = append(affectedNodes, traversingIndex)
 	}
 
-	// Replace the item that should be removed with the item before inorder which we just found.
+	// Replace the item (predecessor) that should be removed with the item before inorder which we just found.
 	n.items[index] = aNode.items[len(aNode.items)-1]
 	aNode.items = aNode.items[:len(aNode.items)-1]
 	n.writeNodes(n, aNode)
@@ -446,7 +443,7 @@ func (n *Node) merge(bNode *Node, bNodeIndex int) error {
 	}
 
 	n.writeNodes(aNode, n)
-	n.dal.deleteNode(bNode.pageNum)
+	n.tx.db.deleteNode(bNode.pageNum)
 	return nil
 }
 
